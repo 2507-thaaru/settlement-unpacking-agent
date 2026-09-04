@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+
+# Streamlit local runtime state
+.streamlit/
+
+# Local environment & secret files
+.env
+.env.*
+*.local
+
+# OS system files
+.DS_Store
+Thumbs.db
+
+# Temporary artifacts
+report.json
+*.egg-info/
