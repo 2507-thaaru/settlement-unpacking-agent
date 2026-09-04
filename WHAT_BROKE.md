@@ -1,12 +1,5 @@
 # What Broke, and How I Recovered
 
-Razorpay's buildathon explicitly asks for this. Log entries here as you hit
-them — don't reconstruct this after the fact, it reads as more honest (and
-is more useful to you) written in the moment.
-
-Format per entry: what broke → why → how it was fixed/worked around.
-
----
 
 ### Day 1 — Aug 27
 
