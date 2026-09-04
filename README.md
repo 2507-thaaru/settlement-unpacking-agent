@@ -33,7 +33,6 @@ is the remaining work.
 
 ```
 settlement-unpacking-agent/
-├── ANTIGRAVITY_START_HERE.md   # entry point for building this with Antigravity
 ├── data_generator/
 │   └── generate_data.py        # synthetic dataset generator with injected noise
 ├── data/                        # generated CSVs + ground truth (regeneratable)
