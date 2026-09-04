@@ -1,13 +1,10 @@
 # Settlement Unpacking Agent
 
-**Razorpay AI Buildathon 2026 — Track 4: AI Finance Controller**
 
 An agent that explodes lumped Razorpay settlement credits back into their
 components, tracks rolling reserve release, and catches GST-on-MDR ITC
 leakage — three finance-ops loops most reconciliation tools treat separately,
 closed here in one batch-explosion pipeline.
-
-**Building this with Antigravity?** Start at [`ANTIGRAVITY_START_HERE.md`](ANTIGRAVITY_START_HERE.md) — everything's ready, nothing left to design.
 
 Full problem statement: [`docs/project-plan.md`](docs/project-plan.md)
 Full architecture: [`docs/architecture.md`](docs/architecture.md)
@@ -57,7 +54,14 @@ settlement-unpacking-agent/
 │   ├── architecture.md          # module map, data flow, assumptions
 │   └── agent-briefs/            # ready-to-paste Antigravity task briefs, one per pass
 └── WHAT_BROKE.md                 # running log of build issues + fixes (submission requirement)
+
 ```
+
+
+## System architecture
+
+<img width="2172" height="724" alt="image" src="https://github.com/user-attachments/assets/34eed8b9-4d89-49a1-abcf-87980ee0cb77" />
+
 
 ## Running things
 
@@ -77,7 +81,7 @@ python -m src.orchestrator --data-dir data
 streamlit run app/dashboard.py
 ```
 
-### Injected exceptions (ground truth, for evaluation)
+### Injected exceptions (ground truth)
 
 The generator always injects exactly six known faults so the matching
 pipeline's recall can be measured objectively:
