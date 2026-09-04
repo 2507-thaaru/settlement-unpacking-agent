@@ -9,25 +9,6 @@ closed here in one batch-explosion pipeline.
 Full problem statement: [`docs/project-plan.md`](docs/project-plan.md)
 Full architecture: [`docs/architecture.md`](docs/architecture.md)
 
-## Status
-
-All scaffolding, schema, tests, orchestrator, and dashboard are complete
-and verified working. All five matching passes are stubbed with a full
-spec in their docstrings and a matching test file — implementing those
-is the remaining work.
-
-- [x] Synthetic data generator (settlement report, bank statement, GST invoice, sales ledger, reserve ledger)
-- [x] Shared schema/data contract (`src/schemas.py`)
-- [x] Orchestrator (`src/orchestrator.py`) — runs, degrades gracefully with unimplemented passes
-- [x] Dashboard (`app/dashboard.py`) — runs, renders honest per-pass status
-- [x] Test suite for all 5 passes, written against real ground truth (`tests/`)
-- [x] Agent briefs for each pass, ready to paste into Antigravity (`docs/agent-briefs/`)
-- [ ] Pass 1 — batch-level settlement <-> bank match
-- [ ] Pass 2 — order-level explosion and validation
-- [ ] Pass 3 — rolling reserve tracking & release forecast
-- [ ] Pass 4 — GST-on-MDR ITC leakage detection
-- [ ] Pass 5 (stretch) — cross-period settlement flagging
-- [ ] Pitch video
 
 ## Repo structure
 
@@ -79,6 +60,107 @@ python -m src.orchestrator --data-dir data
 # launch the dashboard
 streamlit run app/dashboard.py
 ```
+
+
+
+## Tech Stack
+    Backend & AI Agent
+    
+    Python — Core backend and reconciliation logic
+    FastAPI — REST API layer exposing the settlement agent
+    Uvicorn — ASGI server used to run the FastAPI application
+    Pandas — Processing and analysis of settlement, sales, bank, GST and reserve data
+    Pydantic — Data validation and structured schemas
+    Pytest — Automated testing of reconciliation passes
+    Knowledge Graph — Dynamically generated in-memory graph representing relationships between settlements, orders, transactions, exceptions and reconciliation results
+    Antigravity — Used to develop and orchestrate the backend settlement-unpacking agent
+    Reconciliation Engine
+    
+    The backend uses a 5-pass reconciliation pipeline:
+    
+    Batch Matching — Matches settlement batches against expected amounts
+    Order Validation — Validates individual orders and transaction relationships
+    Reserve Forecasting — Analyzes reserve movements and forecasts expected values
+    GST / ITC Validation — Reconciles GST and input-tax-credit related data
+    Cross-Period Reconciliation — Identifies discrepancies spanning multiple settlement periods
+    
+    Frontend
+    
+    React 19 — UI framework
+    TanStack Start — Full-stack React framework with SSR
+    TanStack Router — File-based routing
+    TanStack Query — API state management and data fetching
+    Vite — Frontend build tooling
+    Tailwind CSS — Styling
+    shadcn/ui — UI component system
+    Recharts — Data visualization and dashboards
+    Lovable — Used to build and iterate on the frontend
+    API & System Architecture
+    REST APIs — Communication between frontend and backend
+    Server-side API Proxy — Frontend requests are routed through /api/proxy/* before reaching the backend
+    Environment-based Configuration — Backend URL and CORS configuration are managed through environment variables
+    Dynamic Knowledge Graph — Rebuilt from the current reconciliation data rather than relying on a static graph
+    
+    Deployment
+    
+    Backend: Render
+    FastAPI deployed as a Web Service
+    Uvicorn production server
+    Public HTTPS endpoint
+    Frontend: Lovable
+    Production frontend hosted on Lovable
+    SSR application deployed with TanStack Start/Nitro
+    Version Control: GitHub
+    Data Layer
+    CSV-based synthetic financial datasets
+    Settlement reports
+    Sales ledger
+    
+    Bank statements
+    
+    GST invoices
+    Reserve ledger
+    Injected exceptions / ground-truth data
+    In-memory processing — No external database is required for the current prototype.
+
+
+                    ┌─────────────────────────┐
+                    │      Razorpay User      │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ React + TanStack Start. │
+                    │       Frontend          │
+                    └────────────┬────────────┘
+                                 │
+                            /api/proxy/*
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │      FastAPI Backend    │
+                    │       on Render         │
+                    └────────────┬────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │   Settlement Agent      │
+                    │     Python + Pandas     │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    ▼                         ▼
+          ┌──────────────────┐      ┌──────────────────┐
+          │ 5 Reconciliation │      │ Dynamic Knowledge│
+          │     Passes       │─────▶│      Graph       │
+          └──────────────────┘      └──────────────────┘
+                    │
+                    ▼
+          ┌──────────────────────┐
+          │ Synthetic Financial  │
+          │       Data           │
+          └──────────────────────┘
+
 
 ### Injected exceptions (ground truth)
 
