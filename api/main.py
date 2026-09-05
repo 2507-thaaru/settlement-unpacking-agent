@@ -1,9 +1,12 @@
+import io
 import os
+import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -11,11 +14,54 @@ from pydantic import BaseModel
 BASE_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from src.schemas import load_all_data, ExceptionCategory
+from src.schemas import (
+    load_all_data,
+    ExceptionCategory,
+    SETTLEMENT_COLUMNS,
+    BANK_COLUMNS,
+    INVOICE_COLUMNS,
+    LEDGER_COLUMNS,
+    RESERVE_COLUMNS,
+)
 from src.orchestrator import run_all
+import pandas as pd
 
 DATA_DIR_ENV = os.getenv("DATA_DIR")
 DATA_DIR = Path(DATA_DIR_ENV) if DATA_DIR_ENV else BASE_DIR / "data"
+DEFAULT_DATA_DIR = BASE_DIR / "data" / "default_sample"
+
+DATASET_SCHEMAS = {
+    "settlement_report": {
+        "filename": "settlement_report.csv",
+        "required_columns": SETTLEMENT_COLUMNS,
+        "keywords": ["settlement", "settlement_report", "payout", "razorpay_settlement"],
+        "key_columns": {"settlement_id", "order_id", "mdr_fee", "gross_amount"},
+    },
+    "bank_statement": {
+        "filename": "bank_statement.csv",
+        "required_columns": BANK_COLUMNS,
+        "keywords": ["bank", "statement", "neft", "bank_statement", "passbook"],
+        "key_columns": {"utr", "credit_amount", "narration"},
+    },
+    "gst_invoice": {
+        "filename": "gst_invoice.csv",
+        "required_columns": INVOICE_COLUMNS,
+        "keywords": ["gst", "invoice", "tax", "gst_invoice", "b2b"],
+        "key_columns": {"invoice_number", "total_mdr_amount", "gst_on_mdr_amount"},
+    },
+    "sales_ledger": {
+        "filename": "sales_ledger.csv",
+        "required_columns": LEDGER_COLUMNS,
+        "keywords": ["ledger", "sales", "sales_ledger", "order_ledger", "erp"],
+        "key_columns": {"invoice_amount", "customer_ref", "gst_period"},
+    },
+    "reserve_ledger": {
+        "filename": "reserve_ledger.csv",
+        "required_columns": RESERVE_COLUMNS,
+        "keywords": ["reserve", "reserve_ledger", "rolling_reserve", "hold"],
+        "key_columns": {"reserve_hold_amount", "reserve_released_amount", "release_due_date"},
+    },
+}
 
 app = FastAPI(
     title="Settlement Unpacking Agent API",
@@ -55,6 +101,100 @@ PASS_LABELS = {
     "pass4_gst_itc": "Pass 4: GST ITC Check",
     "pass5_cross_period": "Pass 5: Cross-Period",
 }
+
+
+def normalize_col_name(col: str) -> str:
+    """Normalize column header into lowercase snake_case alphanumeric."""
+    col = str(col).strip().lower()
+    col = re.sub(r'[^a-z0-9]+', '_', col)
+    return col.strip('_')
+
+
+def parse_uploaded_file(file: UploadFile, content: bytes) -> pd.DataFrame:
+    """Parses raw uploaded bytes into a pandas DataFrame supporting CSV, TSV, Excel, and JSON."""
+    filename = (file.filename or "").lower()
+
+    if filename.endswith(".xlsx") or filename.endswith(".xls"):
+        return pd.read_excel(io.BytesIO(content))
+    elif filename.endswith(".json"):
+        return pd.read_json(io.BytesIO(content))
+    else:
+        # Default to CSV / Text with encoding fallbacks and separator sniffing
+        for encoding in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
+            try:
+                try:
+                    return pd.read_csv(io.BytesIO(content), encoding=encoding, sep=None, engine="python")
+                except Exception:
+                    return pd.read_csv(io.BytesIO(content), encoding=encoding)
+            except Exception:
+                continue
+        raise ValueError(f"Could not parse file '{file.filename}'. Please provide a valid CSV or Excel file.")
+
+
+def identify_and_standardize_dataset(df: pd.DataFrame, filename: str, explicit_type: Optional[str] = None) -> tuple[str, pd.DataFrame]:
+    """
+    Identifies which of the 5 reconciliation datasets the DataFrame represents,
+    renames matched columns to canonical names, and verifies required columns.
+    """
+    if df.empty:
+        raise ValueError(f"Uploaded file '{filename}' contains no data rows.")
+
+    raw_cols = list(df.columns)
+    norm_to_raw = {normalize_col_name(c): c for c in raw_cols}
+    norm_cols_set = set(norm_to_raw.keys())
+
+    best_dataset = None
+    best_score = -1.0
+
+    if explicit_type and explicit_type.strip().lower() in DATASET_SCHEMAS:
+        best_dataset = explicit_type.strip().lower()
+    else:
+        fn_lower = filename.lower()
+        for ds_name, info in DATASET_SCHEMAS.items():
+            req_cols = info["required_columns"]
+            key_cols = info["key_columns"]
+
+            matched_req = [c for c in req_cols if normalize_col_name(c) in norm_cols_set]
+            score = len(matched_req) / len(req_cols)
+
+            matched_keys = [c for c in key_cols if normalize_col_name(c) in norm_cols_set]
+            if len(matched_keys) == len(key_cols):
+                score += 0.5  # bonus for having all key columns
+
+            if any(k in fn_lower for k in info["keywords"]):
+                score += 0.3
+
+            if score > best_score:
+                best_score = score
+                best_dataset = ds_name
+
+        if best_score < 0.4:
+            raise ValueError(
+                f"Could not automatically identify dataset type for '{filename}'. "
+                f"Columns found: {raw_cols}. "
+                f"Expected one of: settlement_report, bank_statement, gst_invoice, sales_ledger, reserve_ledger."
+            )
+
+    target_info = DATASET_SCHEMAS[best_dataset]
+    req_cols = target_info["required_columns"]
+
+    rename_dict = {}
+    for canonical in req_cols:
+        norm_canonical = normalize_col_name(canonical)
+        if norm_canonical in norm_to_raw:
+            raw_name = norm_to_raw[norm_canonical]
+            rename_dict[raw_name] = canonical
+
+    standardized_df = df.rename(columns=rename_dict)
+
+    missing = set(req_cols) - set(standardized_df.columns)
+    if missing:
+        raise ValueError(
+            f"Dataset identified as '{best_dataset}' from '{filename}', but missing required columns: {sorted(list(missing))}. "
+            f"Found columns: {list(df.columns)}"
+        )
+
+    return best_dataset, standardized_df
 
 
 def get_current_context():
@@ -237,6 +377,9 @@ def root():
             "/api/pipeline",
             "/api/data",
             "/api/data/{dataset_name}",
+            "/api/upload",
+            "/api/upload-and-run",
+            "/api/data/reset",
             "/api/run",
         ],
     }
@@ -364,6 +507,39 @@ def list_datasets():
     }
 
 
+@app.post("/api/data/reset", tags=["Datasets"])
+@app.get("/api/data/reset", tags=["Datasets"])
+@app.post("/api/reset", tags=["Datasets"])
+@app.get("/api/reset", tags=["Datasets"])
+def reset_to_demo_data():
+    """
+    Resets all active backend datasets back to the pristine synthetic demo data,
+    re-runs the reconciliation pipeline, and returns the fresh baseline report and knowledge graph.
+    """
+    if not DEFAULT_DATA_DIR.exists():
+        raise HTTPException(status_code=500, detail=f"Default sample data directory not found at {DEFAULT_DATA_DIR}")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    restored_files = []
+    for item in DEFAULT_DATA_DIR.iterdir():
+        if item.is_file() and (item.name.endswith(".csv") or item.name.endswith(".json")):
+            shutil.copy(item, DATA_DIR / item.name)
+            restored_files.append(item.name)
+
+    report, ctx = get_current_report()
+    graph_data = build_knowledge_graph_data(ctx, report)
+
+    return {
+        "status": "success",
+        "message": "Demo datasets successfully restored.",
+        "restored_files": restored_files,
+        "summary": report.get("summary", {}),
+        "passes": report.get("passes", {}),
+        "all_exceptions": report.get("all_exceptions", []),
+        "graph": graph_data,
+    }
+
+
 @app.get("/api/data/{dataset_name}", tags=["Datasets"])
 def get_dataset(dataset_name: str, limit: Optional[int] = Query(100, ge=1, le=5000), offset: Optional[int] = Query(0, ge=0)):
     ctx = get_current_context()
@@ -401,4 +577,68 @@ def trigger_run():
         "message": "Reconciliation pipeline executed successfully",
         "report": report,
         "graph": build_knowledge_graph_data(ctx, report),
+    }
+
+
+@app.post("/api/upload", tags=["Upload & Reconciliation"])
+@app.post("/api/upload-and-run", tags=["Upload & Reconciliation"])
+async def upload_data_files(
+    files: List[UploadFile] = File(..., description="One or more reconciliation dataset files (CSV, XLSX, XLS, JSON, TXT)"),
+    dataset_name: Optional[str] = Form(None, description="Optional explicit target dataset name (settlement_report, bank_statement, gst_invoice, sales_ledger, reserve_ledger)")
+):
+    """
+    Accepts user-uploaded custom files, auto-detects their dataset schema (or uses dataset_name),
+    updates the backend datasets, re-runs the 5-pass reconciliation pipeline, and returns the
+    updated report, metrics, and dynamically rebuilt knowledge graph.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided in upload request.")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    uploaded_info = []
+
+    for file in files:
+        content = await file.read()
+        if not content:
+            continue
+        try:
+            parsed_df = parse_uploaded_file(file, content)
+            ds_type, std_df = identify_and_standardize_dataset(
+                parsed_df,
+                file.filename or "upload.csv",
+                explicit_type=dataset_name
+            )
+
+            target_filename = DATASET_SCHEMAS[ds_type]["filename"]
+            target_path = DATA_DIR / target_filename
+            std_df.to_csv(target_path, index=False)
+
+            uploaded_info.append({
+                "filename": file.filename,
+                "dataset_type": ds_type,
+                "target_file": target_filename,
+                "rows": len(std_df),
+                "columns": list(std_df.columns),
+            })
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error processing file '{file.filename}': {str(e)}")
+
+    if not uploaded_info:
+        raise HTTPException(status_code=400, detail="No valid data files were processed.")
+
+    try:
+        report, ctx = get_current_report()
+        graph_data = build_knowledge_graph_data(ctx, report)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Uploaded files saved, but pipeline execution failed: {str(e)}")
+
+    return {
+        "status": "success",
+        "message": f"Successfully ingested {len(uploaded_info)} dataset file(s) and re-ran reconciliation.",
+        "uploaded_files": uploaded_info,
+        "summary": report.get("summary", {}),
+        "passes": report.get("passes", {}),
+        "all_exceptions": report.get("all_exceptions", []),
+        "graph": graph_data,
+        "forecast": report.get("combined_metrics", {}).get("pass3_reserve_forecast", {}).get("forecast", []),
     }
