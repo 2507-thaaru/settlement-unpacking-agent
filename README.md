@@ -1,6 +1,5 @@
 # Settlement Unpacking Agent
 
-
 An agent that explodes lumped Razorpay settlement credits back into their
 components, tracks rolling reserve release, and catches GST-on-MDR ITC
 leakage — three finance-ops loops most reconciliation tools treat separately,
@@ -108,7 +107,7 @@ streamlit run app/dashboard.py
     Uvicorn production server
     Public HTTPS endpoint
     Frontend: Lovable
-    Production frontend hosted on Lovable
+    Production frontend hosted on Vercel
     SSR application deployed with TanStack Start/Nitro
     Version Control: GitHub
     Data Layer
