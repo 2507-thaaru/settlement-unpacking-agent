@@ -1,9 +1,27 @@
 # Settlement Unpacking Agent
 
+access live demo here - https://settlement-unpacking-agent.vercel.app (or) https://unpack-grace.lovable.app/ 
+
 An agent that explodes lumped Razorpay settlement credits back into their
 components, tracks rolling reserve release, and catches GST-on-MDR ITC
 leakage — three finance-ops loops most reconciliation tools treat separately,
 closed here in one batch-explosion pipeline.
+
+**Turning one lumped settlement credit into a full financial audit trail — automatically.**
+
+Every payment gateway settlement arrives as a single net deposit, quietly bundling together transaction fees, taxes, refunds, chargebacks, and reserve holds into one number. For finance teams, that lump sum is a black box — one that hides tax filing risk, blocks GST Input Tax Credit claims, and buries how much working capital is actually locked away and when it's coming back.
+
+Settlement Unpacking Agent solves this by decomposing every settlement batch back into its true components, then running it through five independent verification passes:
+
+- **Batch Reconciliation** — matches every settlement to its bank credit and verifies the full amount, flagging any unexplained shortfall
+- **Order-Level Validation** — explodes each batch down to individual transactions and catches fee miscalculations
+- **Reserve Forecasting** — tracks exactly how much capital is held in reserve and projects when it becomes available
+- **Tax Reconciliation** — cross-checks tax invoices against actual settlement data to catch Input Tax Credit leakage before it costs money
+- **Filing Period Integrity** — flags settlements that span reporting periods, preventing compliance mismatches
+
+Every finding is backed by a measurable, honest exception list validated against known test cases — not a cherry-picked demo. The result is a system that gives finance teams the audit trail their settlement provider never gave them.
+
+Built as a modular, independently-testable pipeline: each verification pass is a self-contained unit with its own test suite, orchestrated into one unified reporting layer and surfaced through an interactive dashboard.
 
 Full problem statement: [`docs/project-plan.md`](docs/project-plan.md)
 Full architecture: [`docs/architecture.md`](docs/architecture.md)
@@ -58,9 +76,13 @@ python -m src.orchestrator --data-dir data
 
 # launch the dashboard
 streamlit run app/dashboard.py
+
+#knowledge graph build and chat bot response from input data
+<img width="2074" height="1256" alt="image" src="https://github.com/user-attachments/assets/bd4eae83-5911-476d-97c4-7944f39e3af7" />
 ```
+#knowledge graph build and chat bot response from input data
 
-
+<img width="2074" height="1256" alt="image" src="https://github.com/user-attachments/assets/bd4eae83-5911-476d-97c4-7944f39e3af7" />
 
 ## Tech Stack
     Backend & AI Agent
