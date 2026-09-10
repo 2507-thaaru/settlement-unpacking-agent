@@ -154,4 +154,38 @@ def test_upload_invalid_file(client):
     ]
     res = client.post("/api/upload", files=files)
     assert res.status_code == 400
-    assert "Could not automatically identify dataset type" in res.json()["detail"]
+
+
+def test_auth_flow(client):
+    # Test valid login
+    res = client.post("/api/auth/login", json={"email": "admin@settlementagent.ai", "password": "admin123"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    token = data["token"]
+    assert token is not None
+
+    # Test me endpoint with token
+    res_me = client.get(f"/api/auth/me?token={token}")
+    assert res_me.status_code == 200
+    assert res_me.json()["user"]["email"] == "admin@settlementagent.ai"
+
+    # Test invalid login
+    res_invalid = client.post("/api/auth/login", json={"email": "admin@settlementagent.ai", "password": "wrongpassword"})
+    assert res_invalid.status_code == 401
+
+
+def test_chat_endpoint(client):
+    res = client.post("/api/chat", json={"message": "Give me an executive summary of current exceptions"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "reply" in data
+    assert len(data["reply"]) > 0
+
+
+def test_load_sample_endpoint(client):
+    res = client.post("/api/data/load-sample")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert "Sample demo datasets successfully loaded." in data["message"]

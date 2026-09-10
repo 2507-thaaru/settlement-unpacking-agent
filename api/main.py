@@ -24,6 +24,9 @@ from src.schemas import (
     RESERVE_COLUMNS,
 )
 from src.orchestrator import run_all
+from src.cleaner import DataCleaner, DataCleaningResult
+from src.chat_engine import SettlementChatEngine
+from src.auth import verify_password, create_access_token, verify_token, DEMO_USERS
 import pandas as pd
 
 DATA_DIR_ENV = os.getenv("DATA_DIR")
@@ -380,6 +383,11 @@ def root():
             "/api/upload",
             "/api/upload-and-run",
             "/api/data/reset",
+            "/api/data/load-sample",
+            "/api/chat",
+            "/api/auth/login",
+            "/api/auth/me",
+            "/api/auth/logout",
             "/api/run",
         ],
     }
@@ -569,6 +577,113 @@ def get_dataset(dataset_name: str, limit: Optional[int] = Query(100, ge=1, le=50
     }
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: Optional[List[ChatMessage]] = None
+
+
+@app.post("/api/auth/login", tags=["Auth"])
+def login(req: LoginRequest):
+    """Authenticates user and issues a signed session token."""
+    email_clean = req.email.strip().lower()
+    user = DEMO_USERS.get(email_clean)
+    if not user or not verify_password(req.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    token = create_access_token(email_clean)
+    return {
+        "status": "success",
+        "token": token,
+        "user": {
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"],
+        },
+    }
+
+
+@app.get("/api/auth/me", tags=["Auth"])
+def get_current_user_info(token: Optional[str] = Query(None)):
+    """Validates session token and returns active user profile."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication token required.")
+    user = verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token.")
+    return {"status": "ok", "user": user}
+
+
+@app.post("/api/auth/logout", tags=["Auth"])
+def logout():
+    return {"status": "success", "message": "Logged out successfully."}
+
+
+@app.post("/api/chat", tags=["AI Copilot"])
+async def chat_with_agent(req: ChatRequest):
+    """
+    Live data-aware conversational AI assistant that queries current reconciliation state,
+    exceptions, MDR leakage, GST ITC gaps, and reserve release timelines.
+    """
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Query message cannot be empty.")
+
+    report, ctx = get_current_report()
+    history_dicts = [{"role": m.role, "content": m.content} for m in (req.history or [])]
+
+    result = await SettlementChatEngine.chat(
+        query=req.message,
+        ctx=ctx,
+        report=report,
+        history=history_dicts,
+    )
+    return result
+
+
+@app.post("/api/data/load-sample", tags=["Datasets"])
+@app.get("/api/data/load-sample", tags=["Datasets"])
+@app.post("/api/data/reset", tags=["Datasets"])
+@app.get("/api/data/reset", tags=["Datasets"])
+@app.post("/api/reset", tags=["Datasets"])
+@app.get("/api/reset", tags=["Datasets"])
+def reset_to_demo_data():
+    """
+    Resets all active backend datasets back to the pristine synthetic demo data,
+    re-runs the reconciliation pipeline, and returns the fresh baseline report and knowledge graph.
+    """
+    if not DEFAULT_DATA_DIR.exists():
+        raise HTTPException(status_code=500, detail=f"Default sample data directory not found at {DEFAULT_DATA_DIR}")
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    restored_files = []
+    for item in DEFAULT_DATA_DIR.iterdir():
+        if item.is_file() and (item.name.endswith(".csv") or item.name.endswith(".json")):
+            shutil.copy(item, DATA_DIR / item.name)
+            restored_files.append(item.name)
+
+    report, ctx = get_current_report()
+    graph_data = build_knowledge_graph_data(ctx, report)
+
+    return {
+        "status": "success",
+        "message": "Sample demo datasets successfully loaded.",
+        "restored_files": restored_files,
+        "summary": report.get("summary", {}),
+        "passes": report.get("passes", {}),
+        "all_exceptions": report.get("all_exceptions", []),
+        "graph": graph_data,
+    }
+
+
 @app.post("/api/run", tags=["Reconciliation"])
 def trigger_run():
     report, ctx = get_current_report()
@@ -587,15 +702,16 @@ async def upload_data_files(
     dataset_name: Optional[str] = Form(None, description="Optional explicit target dataset name (settlement_report, bank_statement, gst_invoice, sales_ledger, reserve_ledger)")
 ):
     """
-    Accepts user-uploaded custom files, auto-detects their dataset schema (or uses dataset_name),
-    updates the backend datasets, re-runs the 5-pass reconciliation pipeline, and returns the
-    updated report, metrics, and dynamically rebuilt knowledge graph.
+    Accepts user-uploaded custom or messy files, cleans currency symbols/dates/headers,
+    auto-derives handleable fields, intimates if critical columns are unhandleable,
+    updates backend datasets, and re-runs the 5-pass reconciliation pipeline.
     """
     if not files:
         raise HTTPException(status_code=400, detail="No files provided in upload request.")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     uploaded_info = []
+    all_actions = []
 
     for file in files:
         content = await file.read()
@@ -603,23 +719,40 @@ async def upload_data_files(
             continue
         try:
             parsed_df = parse_uploaded_file(file, content)
-            ds_type, std_df = identify_and_standardize_dataset(
+            clean_res = DataCleaner.clean_and_standardize(
                 parsed_df,
-                file.filename or "upload.csv",
-                explicit_type=dataset_name
+                filename=file.filename or "upload.csv",
+                explicit_type=dataset_name,
             )
 
-            target_filename = DATASET_SCHEMAS[ds_type]["filename"]
-            target_path = DATA_DIR / target_filename
-            std_df.to_csv(target_path, index=False)
+            if not clean_res.is_valid or clean_res.cleaned_df is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": f"File '{file.filename}' is unhandleable.",
+                        "dataset_type": clean_res.dataset_type,
+                        "missing_critical_columns": clean_res.missing_critical_columns,
+                        "suggested_fix": clean_res.suggested_fix,
+                        "warnings": clean_res.warnings,
+                    }
+                )
+
+            target_path = DATA_DIR / clean_res.target_filename
+            clean_res.cleaned_df.to_csv(target_path, index=False)
 
             uploaded_info.append({
                 "filename": file.filename,
-                "dataset_type": ds_type,
-                "target_file": target_filename,
-                "rows": len(std_df),
-                "columns": list(std_df.columns),
+                "dataset_type": clean_res.dataset_type,
+                "target_file": clean_res.target_filename,
+                "rows": clean_res.row_count,
+                "columns": list(clean_res.cleaned_df.columns),
+                "actions_taken": clean_res.actions_taken,
+                "warnings": clean_res.warnings,
             })
+            all_actions.extend([f"[{file.filename}] {act}" for act in clean_res.actions_taken])
+
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Error processing file '{file.filename}': {str(e)}")
 
@@ -634,8 +767,9 @@ async def upload_data_files(
 
     return {
         "status": "success",
-        "message": f"Successfully ingested {len(uploaded_info)} dataset file(s) and re-ran reconciliation.",
+        "message": f"Successfully ingested and cleaned {len(uploaded_info)} dataset file(s).",
         "uploaded_files": uploaded_info,
+        "cleaning_actions": all_actions,
         "summary": report.get("summary", {}),
         "passes": report.get("passes", {}),
         "all_exceptions": report.get("all_exceptions", []),
